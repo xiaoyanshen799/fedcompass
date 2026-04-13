@@ -6,8 +6,23 @@ import pathlib
 import os.path as osp
 import importlib.util
 
+import numpy as np
+import torch
+
 def id_generator(size=6, chars=string.ascii_uppercase + string.digits):
     return ''.join(random.choice(chars) for _ in range(size))
+
+def set_random_seed(seed: int) -> None:
+    """
+    Set the random seed for Python, NumPy, and PyTorch.
+
+    :param seed: The seed value to use.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 def create_instance_from_file(file_path, class_name, *args, **kwargs):
     """

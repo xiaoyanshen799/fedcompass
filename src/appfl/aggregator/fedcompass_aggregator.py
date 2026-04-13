@@ -67,6 +67,7 @@ class FedCompassAggregator(BaseAggregator):
                         if i == len(local_models) - 1:
                             global_state[name] = torch.div(global_state[name], len(local_models))
         self.model.load_state_dict(global_state)
+        self.increment_global_update()
         return global_state
 
     def get_parameters(self, **kwargs) -> Dict:

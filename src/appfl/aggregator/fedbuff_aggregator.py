@@ -31,6 +31,7 @@ class FedBuffAggregator(FedAsyncAggregator):
                 else:
                     global_state[name] += self.step[name]
             self.model.load_state_dict(global_state)
+            self.increment_global_update()
             self.global_step += 1
             self.buff_size = 0
             

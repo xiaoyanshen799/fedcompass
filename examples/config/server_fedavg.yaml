@@ -6,13 +6,14 @@ client_configs:
     num_local_steps: 100
     optim: "Adam"
     optim_args:
-      lr: 0.001
+      lr: 0.003
+    seed: 42
     # Loss function
     loss_fn_path: "./loss/celoss.py"
     loss_fn_name: "CELoss"
     # Client validation
-    do_validation: True
-    do_pre_validation: True
+    do_validation: False
+    do_pre_validation: False
     metric_path: "./metric/acc.py"
     metric_name: "accuracy"
     # Differential privacy
@@ -49,14 +50,22 @@ client_configs:
 server_configs:
   scheduler: "SyncScheduler"
   scheduler_kwargs:
-    num_clients: 2
+    num_clients: 5
     same_init_model: True
   aggregator: "FedAvgAggregator"
   aggregator_kwargs:
-    client_weights_mode: "equal"
+    client_weights_mode: "sample_size"
+  seed: 42
   device: "cpu"
-  num_global_epochs: 10
-  server_validation: False
+  num_global_epochs: 70
+  server_validation: True
+  validation_data_configs:
+    dataset_path: "./dataset/mnist_dataset.py"
+    dataset_name: "get_mnist"
+    dataset_kwargs:
+      num_clients: 5
+      client_id: 0
+      partition_strategy: "dirichlet_nomiid"
   logging_output_dirname: "./output"
   logging_output_filename: "result"
   comm_configs:

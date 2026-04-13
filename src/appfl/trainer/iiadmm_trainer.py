@@ -89,6 +89,8 @@ class IIADMMTrainer(BaseTrainer):
             )
             if self.train_configs.mode == "epoch":
                 title.insert(1, "Epoch")
+            else:
+                title.insert(1 if not do_pre_validation else 2, "Q")
             self.logger.log_title(title)
 
         pre_val_interval = self.train_configs.get("pre_validation_interval", 1)
@@ -97,6 +99,8 @@ class IIADMMTrainer(BaseTrainer):
             content = [self.round, "Y", " ", " ", " ", val_loss, val_accuracy]  
             if self.train_configs.mode == "epoch":
                 content.insert(1, 0)
+            else:
+                content.insert(2, self.train_configs.num_local_steps)
             self.logger.log_content(content)
 
         optim_module = importlib.import_module("torch.optim")
@@ -140,10 +144,11 @@ class IIADMMTrainer(BaseTrainer):
                     )
                 )
         else:
+            local_steps = self.train_configs.num_local_steps
             start_time = time.time()
             data_iter = iter(self.train_dataloader)
             train_loss, target_true, target_pred = 0, [], []
-            for _ in range(self.train_configs.num_local_steps):
+            for _ in range(local_steps):
                 try:
                     data, target = next(data_iter)
                 except:
@@ -160,13 +165,13 @@ class IIADMMTrainer(BaseTrainer):
                 val_loss, val_accuracy = self._validate()
             per_step_time = time.time() - start_time
             self.logger.log_content(
-                [self.round, per_step_time, train_loss, train_accuracy] 
+                [self.round, local_steps, per_step_time, train_loss, train_accuracy] 
                 if not do_validation
                 else (
-                    [self.round, per_step_time, train_loss, train_accuracy, val_loss, val_accuracy]
+                    [self.round, local_steps, per_step_time, train_loss, train_accuracy, val_loss, val_accuracy]
                     if not do_pre_validation 
                     else 
-                    [self.round, 'N', per_step_time, train_loss, train_accuracy, val_loss, val_accuracy]
+                    [self.round, 'N', local_steps, per_step_time, train_loss, train_accuracy, val_loss, val_accuracy]
                 )
             )
         

@@ -11,7 +11,8 @@ from appfl.misc import create_instance_from_file, \
     run_function_from_file, \
     get_function_from_file, \
     create_instance_from_file_source, \
-    get_function_from_file_source
+    get_function_from_file_source, \
+    set_random_seed
 
 class APPFLClientAgent:
     """
@@ -33,6 +34,7 @@ class APPFLClientAgent:
         client_agent_config: ClientAgentConfig = ClientAgentConfig()
     ) -> None:
         self.client_agent_config = client_agent_config
+        self._apply_random_seed()
         self._create_logger()
         self._load_model()
         self._load_loss()
@@ -44,6 +46,7 @@ class APPFLClientAgent:
     def load_config(self, config: DictConfig) -> None:
         """Load additional configurations provided by the server."""
         self.client_agent_config = OmegaConf.merge(self.client_agent_config, config)
+        self._apply_random_seed()
         self._load_model()
         self._load_loss()
         self._load_metric()
@@ -96,6 +99,14 @@ class APPFLClientAgent:
             kwargs["file_dir"] = self.client_agent_config.train_configs.get("logging_output_dirname", "./output")
             kwargs["file_name"] = self.client_agent_config.train_configs.get("logging_output_filename", "result")
         self.logger = ClientAgentFileLogger(**kwargs)
+
+    def _apply_random_seed(self) -> None:
+        """Set a fixed random seed for reproducible local training when configured."""
+        if (
+            hasattr(self.client_agent_config, "train_configs")
+            and hasattr(self.client_agent_config.train_configs, "seed")
+        ):
+            set_random_seed(int(self.client_agent_config.train_configs.seed))
 
     def _load_data(self) -> None:
         """Get train and validation dataloaders from local dataloader file."""

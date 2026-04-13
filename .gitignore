@@ -7,3 +7,8 @@ __pycache__/
 *RawData
 .compressor
 *credential.csv
+
+output/
+.venv/
+
+normal-*/

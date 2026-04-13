@@ -46,6 +46,7 @@ class FedAsyncAggregator(BaseAggregator):
             else:
                 global_state[name] += self.step[name]
         self.model.load_state_dict(global_state)
+        self.increment_global_update()
         self.global_step += 1
         self.client_step[client_id] = self.global_step
         return global_state

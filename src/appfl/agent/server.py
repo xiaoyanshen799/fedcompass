@@ -1,4 +1,6 @@
 import io
+import time
+import numpy as np
 import torch
 import threading
 import torch.nn as nn
@@ -6,11 +8,12 @@ from appfl.scheduler import *
 from appfl.aggregator import *
 from appfl.compressor import Compressor
 from appfl.config import ServerAgentConfig
-from appfl.misc import create_instance_from_file, get_function_from_file
+from appfl.misc import create_instance_from_file, get_function_from_file, run_function_from_file, set_random_seed
 from appfl.logger import ServerAgentFileLogger
 from concurrent.futures import Future
 from omegaconf import OmegaConf, DictConfig
 from typing import Union, Dict, OrderedDict, Tuple, Optional
+from torch.utils.data import DataLoader
 
 class APPFLServerAgent:
     """
@@ -26,6 +29,9 @@ class APPFLServerAgent:
         server_agent_config: ServerAgentConfig = ServerAgentConfig()
     ) -> None:
         self.server_agent_config = server_agent_config
+        self._server_start_time: Optional[float] = None
+        self._registered_clients: set[Union[int, str]] = set()
+        self._registered_clients_lock = threading.Lock()
         if hasattr(self.server_agent_config.client_configs, "comm_configs"):
             self.server_agent_config.server_configs.comm_configs = (OmegaConf.merge(
                 self.server_agent_config.server_configs.comm_configs,
@@ -33,10 +39,12 @@ class APPFLServerAgent:
             ) if hasattr(self.server_agent_config.server_configs, "comm_configs") 
             else self.server_agent_config.client_configs.comm_configs
             )
+        self._apply_random_seed()
         self._create_logger()
         self._load_model()
         self._load_loss()
         self._load_metric()
+        self._load_server_validation()
         self._load_scheduler()
         self._load_compressor()
 
@@ -67,9 +75,12 @@ class APPFLServerAgent:
                 local_model = self._bytes_to_model(local_model)
             global_model = self.scheduler.schedule(client_id, local_model, **kwargs)
             if not isinstance(global_model, Future):
+                self._maybe_run_server_validation()
                 return global_model
             if blocking:
-                return global_model.result() # blocking until the `Future` is done
+                result = global_model.result() # blocking until the `Future` is done
+                self._maybe_run_server_validation()
+                return result
             else:
                 return global_model # return the `Future` object
         
@@ -104,19 +115,9 @@ class APPFLServerAgent:
             Otherwise, the method may return a `Future` object of the relative weight, which will be resolved 
             when the sample size of all clients is synchronized.
         """
+        self._mark_client_ready(client_id)
         if sync:
-            assert (
-                hasattr(self.server_agent_config.server_configs, "num_clients") or
-                hasattr(self.server_agent_config.server_configs.scheduler_kwargs, "num_clients") or
-                hasattr(self.server_agent_config.server_configs.aggregator_kwargs, "num_clients")
-            ), "The number of clients should be set in the server configurations."
-            num_clients = (
-                self.server_agent_config.server_configs.num_clients if
-                hasattr(self.server_agent_config.server_configs, "num_clients") else
-                self.server_agent_config.server_configs.scheduler_kwargs.num_clients if
-                hasattr(self.server_agent_config.server_configs.scheduler_kwargs, "num_clients") else
-                self.server_agent_config.server_configs.aggregator_kwargs.num_clients
-            )
+            num_clients = self._get_num_clients()
         self.aggregator.set_client_sample_size(client_id, sample_size)
         if sync:
             if not hasattr(self, "_client_sample_size"):
@@ -156,13 +157,7 @@ class APPFLServerAgent:
         """Whether the server can be terminated from listening to the clients."""
         if not hasattr(self, "num_finish_calls"):
             return False
-        num_clients = (
-            self.server_agent_config.server_configs.num_clients if 
-            hasattr(self.server_agent_config.server_configs, "num_clients") else
-            self.server_agent_config.server_configs.scheduler_kwargs.num_clients if
-            hasattr(self.server_agent_config.server_configs.scheduler_kwargs, "num_clients") else
-            self.server_agent_config.server_configs.aggregator_kwargs.num_clients
-        )
+        num_clients = self._get_num_clients()
         with self._num_finish_calls_lock:
             terminated = self.num_finish_calls >= num_clients
         if terminated and hasattr(self.scheduler, "clean_up"):
@@ -176,6 +171,11 @@ class APPFLServerAgent:
         if hasattr(self.server_agent_config.server_configs, "logging_output_filename"):
             kwargs["file_name"] = self.server_agent_config.server_configs.logging_output_filename
         self.logger = ServerAgentFileLogger(**kwargs)
+
+    def _apply_random_seed(self) -> None:
+        """Set a fixed random seed for reproducible server-side initialization when configured."""
+        if hasattr(self.server_agent_config.server_configs, "seed"):
+            set_random_seed(int(self.server_agent_config.server_configs.seed))
 
     def _load_model(self) -> None:
         """
@@ -234,6 +234,137 @@ class APPFLServerAgent:
             del self.server_agent_config.client_configs.train_configs.metric_path
         else:
             self.metric = None
+
+    def _load_server_validation(self) -> None:
+        """
+        Optionally load a validation dataset for evaluating the global model on the server.
+        """
+        self.server_validation_enabled = False
+        self.server_val_dataloader = None
+        self._last_logged_global_update = 0
+        self._server_validation_lock = threading.Lock()
+
+        if not self.server_agent_config.server_configs.get("server_validation", False):
+            return
+        data_configs = None
+        if hasattr(self.server_agent_config.server_configs, "validation_data_configs"):
+            data_configs = self.server_agent_config.server_configs.validation_data_configs
+        elif hasattr(self.server_agent_config.server_configs, "data_configs"):
+            data_configs = self.server_agent_config.server_configs.data_configs
+        elif hasattr(self.server_agent_config.client_configs, "data_configs"):
+            data_configs = self.server_agent_config.client_configs.data_configs
+
+        if data_configs is None:
+            self.logger.info("Server validation disabled: missing validation_data_configs.")
+            return
+        if self.loss_fn is None or self.metric is None:
+            self.logger.info("Server validation disabled: missing loss function or metric.")
+            return
+
+        dataset_kwargs = OmegaConf.to_container(
+            data_configs.get("dataset_kwargs", {}),
+            resolve=True,
+        )
+        if "client_id" in dataset_kwargs:
+            dataset_kwargs["client_id"] = 0
+
+        datasets = run_function_from_file(
+            data_configs.dataset_path,
+            data_configs.dataset_name,
+            **dataset_kwargs,
+        )
+        if not isinstance(datasets, tuple) or len(datasets) < 2 or datasets[1] is None:
+            self.logger.info("Server validation disabled: dataset did not return a validation split.")
+            return
+
+        train_configs = self.server_agent_config.client_configs.train_configs
+        self.server_val_dataloader = DataLoader(
+            datasets[1],
+            batch_size=train_configs.get("val_batch_size", 32),
+            shuffle=train_configs.get("val_data_shuffle", False),
+            num_workers=train_configs.get("num_workers", 0),
+        )
+        self.server_validation_enabled = True
+        self.logger.log_title(["Global Update", "Elapsed Time", "Val Loss", "Val Accuracy"])
+
+    def _evaluate_global_model(self) -> Tuple[float, float]:
+        """
+        Evaluate the current global model on the server validation set.
+        """
+        assert self.server_val_dataloader is not None, "Validation dataloader is not initialized."
+        device = self.server_agent_config.server_configs.get("device", "cpu")
+        self.model.to(device)
+        self.model.eval()
+        val_loss = 0.0
+        target_pred = []
+        target_true = []
+        with torch.no_grad():
+            for data, target in self.server_val_dataloader:
+                data, target = data.to(device), target.to(device)
+                output = self.model(data)
+                val_loss += self.loss_fn(output, target).item()
+                target_true.append(target.detach().cpu().numpy())
+                target_pred.append(output.detach().cpu().numpy())
+        val_loss /= len(self.server_val_dataloader)
+        val_accuracy = float(self.metric(np.concatenate(target_true), np.concatenate(target_pred)))
+        self.model.train()
+        return val_loss, val_accuracy
+
+    def _maybe_run_server_validation(self) -> None:
+        """
+        Run server-side validation exactly once for each completed global model update.
+        """
+        if not self.server_validation_enabled:
+            return
+        current_update = self.aggregator.get_num_global_updates()
+        if current_update <= self._last_logged_global_update:
+            return
+
+        with self._server_validation_lock:
+            current_update = self.aggregator.get_num_global_updates()
+            if current_update <= self._last_logged_global_update:
+                return
+            if self._server_start_time is None:
+                # Fallback for flows that do not register all clients up front.
+                self._server_start_time = time.time()
+            val_loss, val_accuracy = self._evaluate_global_model()
+            elapsed_time = time.time() - self._server_start_time
+            self.logger.log_content([current_update, elapsed_time, val_loss, val_accuracy])
+            self._last_logged_global_update = current_update
+
+    def _get_num_clients(self) -> int:
+        assert (
+            hasattr(self.server_agent_config.server_configs, "num_clients") or
+            hasattr(self.server_agent_config.server_configs, "scheduler_kwargs") and
+            hasattr(self.server_agent_config.server_configs.scheduler_kwargs, "num_clients") or
+            hasattr(self.server_agent_config.server_configs, "aggregator_kwargs") and
+            hasattr(self.server_agent_config.server_configs.aggregator_kwargs, "num_clients")
+        ), "The number of clients should be set in the server configurations."
+        return (
+            self.server_agent_config.server_configs.num_clients if
+            hasattr(self.server_agent_config.server_configs, "num_clients") else
+            self.server_agent_config.server_configs.scheduler_kwargs.num_clients if
+            hasattr(self.server_agent_config.server_configs, "scheduler_kwargs") and
+            hasattr(self.server_agent_config.server_configs.scheduler_kwargs, "num_clients") else
+            self.server_agent_config.server_configs.aggregator_kwargs.num_clients
+        )
+
+    def _mark_client_ready(self, client_id: Union[int, str]) -> None:
+        """
+        Mark a client as ready once it has completed the initial handshake needed
+        to start local training. The server elapsed-time clock starts when all
+        expected clients have reached this point.
+        """
+        with self._registered_clients_lock:
+            self._registered_clients.add(client_id)
+            if (
+                self._server_start_time is None and
+                len(self._registered_clients) >= self._get_num_clients()
+            ):
+                self._server_start_time = time.time()
+                self.logger.info(
+                    "All expected clients registered; starting elapsed-time clock."
+                )
 
     def _load_scheduler(self) -> None:
         """Obtain the scheduler."""

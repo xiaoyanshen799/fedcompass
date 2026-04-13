@@ -43,6 +43,7 @@ class FedAvgAggregator(BaseAggregator):
                 global_state[name] += self.step[name]
             
         self.model.load_state_dict(global_state)
+        self.increment_global_update()
         return global_state
     
     def compute_steps(self, local_models: Dict[Union[str, int], Union[Dict, OrderedDict]]):
@@ -63,4 +64,3 @@ class FedAvgAggregator(BaseAggregator):
             for name in self.named_parameters:
                 self.step[name] += weight * (model[name] - self.model.state_dict()[name])
     
-

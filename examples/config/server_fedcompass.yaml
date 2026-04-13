@@ -3,16 +3,17 @@ client_configs:
     # Local trainer
     trainer: "NaiveTrainer"
     mode: "step"
-    num_local_steps: 100
+    num_local_steps: 20
     optim: "Adam"
     optim_args:
-      lr: 0.001
+      lr: 0.003
+    seed: 42
     # Loss function
     loss_fn_path: "./loss/celoss.py"
     loss_fn_name: "CELoss"
     # Client validation
-    do_validation: True
-    do_pre_validation: True
+    do_validation: False
+    do_pre_validation: False
     metric_path: "./metric/acc.py"
     metric_name: "accuracy"
     # Differential privacy
@@ -51,12 +52,12 @@ client_configs:
 server_configs:
   scheduler: "CompassScheduler"
   scheduler_kwargs:
-    num_clients: 2
+    num_clients: 5
     same_init_model: True
     max_local_steps: 100
     min_local_steps: 20
     speed_momentum: 0.9
-    latest_time_factor: 1.5
+    latest_time_factor: 1.2
   aggregator: "FedCompassAggregator"
   aggregator_kwargs:
     weights: "equal"
@@ -65,10 +66,18 @@ server_configs:
       a: 0.5
     alpha: 0.9
     gradient_based: True
-    num_clients: 2
+    num_clients: 5
+  seed: 42
   device: "cpu"
-  num_global_epochs: 20
-  server_validation: False
+  num_global_epochs: 400
+  server_validation: True
+  validation_data_configs:
+    dataset_path: "./dataset/mnist_dataset.py"
+    dataset_name: "get_mnist"
+    dataset_kwargs:
+      num_clients: 5
+      client_id: 0
+      partition_strategy: "dirichlet_nomiid"
   logging_output_dirname: "./output"
   logging_output_filename: "result"
   comm_configs:

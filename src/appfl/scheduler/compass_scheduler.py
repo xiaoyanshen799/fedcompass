@@ -43,8 +43,16 @@ class CompassScheduler(BaseScheduler):
         """
         with self._access_lock:
             if kwargs.get("init_model", True):
+                same_init_model = self.scheduler_configs.get("same_init_model", True)
+                serial_run = kwargs.get("serial_run", False)
                 init_model_requests = self.init_model_requests if hasattr(self, "init_model_requests") else 0
-                if init_model_requests == 0:
+                if same_init_model and not serial_run:
+                    # Match synchronous baselines: start timing when the final client
+                    # reaches the shared initial-model barrier, not when the first
+                    # client arrives.
+                    if init_model_requests + 1 == self.scheduler_configs.num_clients:
+                        self.start_time = time.time()
+                elif not hasattr(self, "start_time"):
                     self.start_time = time.time()
             paramameters = super().get_parameters(**kwargs)
             return paramameters
