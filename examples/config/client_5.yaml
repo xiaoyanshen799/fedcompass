@@ -1,27 +1,24 @@
 train_configs:
-  # Device
-  device: "cpu"
-  # Random seed
+  device: cpu
   seed: 42
-  # Logging and outputs
-  logging_id: "Client5"
-  logging_output_dirname: "./output"
-  logging_output_filename: "result"
-
-# Local dataloader
+  logging_id: Client5
+  logging_output_dirname: ./output
+  logging_output_filename: result
 data_configs:
-  dataset_path: "./dataset/mnist_dataset.py"
-  dataset_name: "get_mnist"
+  dataset_path: ./dataset/mnist_dataset.py
+  dataset_name: get_mnist
   dataset_kwargs:
-    num_clients: 5
+    num_clients: 10
     client_id: 4
-    partition_strategy: "dirichlet_nomiid"
-    visualization: True
-    output_dirname: "./output"
-    output_filename: "visualization.pdf"
-
+    partition_strategy: dirichlet_nomiid
+    alpha1: 5
+    alpha2: 0.5
+    seed: 1099
+    visualization: true
+    output_dirname: ./output
+    output_filename: visualization.pdf
 comm_configs:
   grpc_configs:
     server_uri: localhost:50051
     max_message_size: 1048576
-    use_ssl: False
+    use_ssl: false

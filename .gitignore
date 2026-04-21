@@ -10,5 +10,6 @@ __pycache__/
 
 output/
 .venv/
-
+old/
+spped1/
 normal-*/

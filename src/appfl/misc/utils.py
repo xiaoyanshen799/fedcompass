@@ -3,6 +3,7 @@ import sys
 import random
 import string
 import pathlib
+import tempfile
 import os.path as osp
 import importlib.util
 
@@ -152,15 +153,22 @@ def create_instance_from_file_source(source, class_name, *args, **kwargs):
     dirname = osp.join(_home, ".appfl", "tmp")
     if not osp.exists(dirname):
         pathlib.Path(dirname).mkdir(parents=True, exist_ok=True)
-    file_path = osp.join(dirname, f"{id_generator()}.py")
-    with open(file_path, "w") as file:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".py",
+        dir=dirname,
+        delete=False,
+        encoding="utf-8",
+    ) as file:
         file.write(source)
+        file_path = file.name
 
     # Create an instance from the temporary file
-    instance = create_instance_from_file(file_path, class_name, *args, **kwargs)
-
-    # Remove the temporary file
-    os.remove(file_path)
+    try:
+        instance = create_instance_from_file(file_path, class_name, *args, **kwargs)
+    finally:
+        if osp.exists(file_path):
+            os.remove(file_path)
 
     return instance
 
@@ -177,15 +185,22 @@ def get_function_from_file_source(source, function_name):
     dirname = osp.join(_home, ".appfl", "tmp")
     if not osp.exists(dirname):
         pathlib.Path(dirname).mkdir(parents=True, exist_ok=True)
-    file_path = osp.join(dirname, f"{id_generator()}.py")
-    with open(file_path, "w") as file:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".py",
+        dir=dirname,
+        delete=False,
+        encoding="utf-8",
+    ) as file:
         file.write(source)
+        file_path = file.name
 
     # Get the function from the temporary file
-    function = get_function_from_file(file_path, function_name)
-
-    # Remove the temporary file
-    os.remove(file_path)
+    try:
+        function = get_function_from_file(file_path, function_name)
+    finally:
+        if osp.exists(file_path):
+            os.remove(file_path)
 
     return function
 

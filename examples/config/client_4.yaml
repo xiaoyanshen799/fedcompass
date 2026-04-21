@@ -16,6 +16,9 @@ data_configs:
     num_clients: 5
     client_id: 3
     partition_strategy: "dirichlet_nomiid"
+    alpha1: 5
+    alpha2: 0.5
+    seed: 123
     visualization: True
     output_dirname: "./output"
     output_filename: "visualization.pdf"

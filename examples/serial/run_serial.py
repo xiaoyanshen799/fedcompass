@@ -9,7 +9,7 @@ from appfl.agent import APPFLClientAgent, APPFLServerAgent
 argparser = argparse.ArgumentParser()
 argparser.add_argument("--server_config", type=str, default="config/server_fedavg.yaml")
 argparser.add_argument("--client_config", type=str, default="config/client_1.yaml")
-argparser.add_argument("--num_clients", type=int, default=10)
+argparser.add_argument("--num_clients", type=int, default=20)
 args = argparser.parse_args()
 
 # Load server agent configurations and set the number of clients

@@ -11,9 +11,59 @@ argparser.add_argument(
     default="config/client_1.yaml",
     help="Path to the client configuration file.",
 )
+argparser.add_argument(
+    "--client-id",
+    type=int,
+    default=None,
+    help="Dataset partition id for this client.",
+)
+argparser.add_argument(
+    "--num-clients",
+    type=int,
+    default=None,
+    help="Override the total number of clients used for dataset partitioning.",
+)
+argparser.add_argument(
+    "--logging-output-dir",
+    type=str,
+    default=None,
+    help="Override client log output directory.",
+)
+argparser.add_argument(
+    "--logging-output-filename",
+    type=str,
+    default=None,
+    help="Override client log output base filename.",
+)
+argparser.add_argument(
+    "--data-output-dir",
+    type=str,
+    default=None,
+    help="Override dataset visualization output directory.",
+)
+argparser.add_argument(
+    "--data-output-filename",
+    type=str,
+    default=None,
+    help="Override dataset visualization output filename.",
+)
 args = argparser.parse_args()
 
 client_agent_config = OmegaConf.load(args.config)
+if args.num_clients is not None:
+    client_agent_config.data_configs.dataset_kwargs.num_clients = args.num_clients
+if args.client_id is not None:
+    client_agent_config.data_configs.dataset_kwargs.client_id = args.client_id
+    client_agent_config.data_configs.dataset_kwargs.visualization = args.client_id == 0
+    client_agent_config.train_configs.logging_id = f"Client{args.client_id + 1}"
+if args.logging_output_dir is not None:
+    client_agent_config.train_configs.logging_output_dirname = args.logging_output_dir
+if args.logging_output_filename is not None:
+    client_agent_config.train_configs.logging_output_filename = args.logging_output_filename
+if args.data_output_dir is not None:
+    client_agent_config.data_configs.dataset_kwargs.output_dirname = args.data_output_dir
+if args.data_output_filename is not None:
+    client_agent_config.data_configs.dataset_kwargs.output_filename = args.data_output_filename
 
 client_agent = APPFLClientAgent(client_agent_config=client_agent_config)
 client_communicator = GRPCClientCommunicator(

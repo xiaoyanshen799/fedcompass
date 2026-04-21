@@ -13,13 +13,13 @@ Single run:
 
 Multiple repeated runs from the same setting:
     python examples/plot_time_accuracy.py \
-        'examples/output/result_server_[1-7].csv' \
+        'examples/output/result_server_[0-7].csv' \
         --aggregate both \
         --output examples/output/time_accuracy_repeat_runs.png
 
 Compare two settings on one figure:
     python examples/plot_time_accuracy.py \
-        --group 'setting_a=examples/output/result_server_[1-3].csv' \
+        --group 'setting_a=examples/output/result_server_[0-3].csv' \
         --group 'setting_b=examples/output/result_server_[4-7].csv' \
         --aggregate both \
         --output examples/output/compare_settings.png
@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import fnmatch
 import glob
 import re
 from collections import defaultdict
@@ -45,6 +46,8 @@ TXT_LINE_RE = re.compile(
     r"(?P<loss>[0-9]*\.?[0-9]+)\s+"
     r"(?P<accuracy>[0-9]*\.?[0-9]+)\s*$"
 )
+
+RUN_ALIAS_RE = re.compile(r"(?P<prefix>.+)_\[(?P<selector>[^\]]+)\](?P<suffix>\..+)")
 
 
 def parse_args() -> argparse.Namespace:
@@ -100,6 +103,30 @@ def parse_args() -> argparse.Namespace:
         help="Line transparency when drawing every run.",
     )
     parser.add_argument(
+        "--time-scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Global multiplier applied to elapsed time before plotting and summary "
+            "statistics. Useful when converting wall-clock time to CPU time."
+        ),
+    )
+    parser.add_argument(
+        "--group-time-scale",
+        action="append",
+        default=[],
+        metavar="LABEL=FACTOR",
+        help=(
+            "Per-group elapsed-time multiplier applied on top of --time-scale. "
+            "Example: --group-time-scale setting_a=0.45"
+        ),
+    )
+    parser.add_argument(
+        "--x-label",
+        default=None,
+        help="Optional custom x-axis label.",
+    )
+    parser.add_argument(
         "--dpi",
         type=int,
         default=180,
@@ -108,13 +135,72 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def parse_run_selector(selector: str) -> set[str]:
+    """Expand selectors like 0-3,9,12-14 into a set of run ids."""
+    run_ids: set[str] = set()
+    for raw_part in selector.split(","):
+        part = raw_part.strip()
+        if not part:
+            continue
+        range_match = re.fullmatch(r"(\d+)-(\d+)", part)
+        if range_match:
+            start = int(range_match.group(1))
+            end = int(range_match.group(2))
+            if start > end:
+                raise ValueError(f"Invalid descending run range '{part}' in selector '{selector}'")
+            for run_id in range(start, end + 1):
+                run_ids.add(str(run_id))
+            continue
+        if not re.fullmatch(r"\d+", part):
+            raise ValueError(
+                f"Invalid run selector '{part}' in '{selector}'. "
+                "Use integers or inclusive ranges like 0-3,9,12-14."
+            )
+        run_ids.add(str(int(part)))
+    if not run_ids:
+        raise ValueError(f"Empty run selector '{selector}'")
+    return run_ids
+
+
+def resolve_appfl_run_aliases(pattern: str) -> list[Path] | None:
+    """Resolve APPFL run-index patterns where run 0 is the unsuffixed file."""
+    path_pattern = Path(pattern)
+    parent = path_pattern.parent if str(path_pattern.parent) not in {"", "."} else Path(".")
+    filename = path_pattern.name
+    match = RUN_ALIAS_RE.fullmatch(filename)
+    if not match or not parent.exists():
+        return None
+
+    prefix = match.group("prefix")
+    selector = match.group("selector")
+    suffix = match.group("suffix")
+    selected_run_ids = parse_run_selector(selector)
+    candidate_pattern = f"{prefix}*{suffix}"
+    filename_re = re.compile(
+        rf"^{re.escape(prefix)}(?:_(?P<run>\d+))?{re.escape(suffix)}$"
+    )
+
+    matched_files: list[Path] = []
+    for candidate in sorted(parent.glob(candidate_pattern)):
+        candidate_match = filename_re.fullmatch(candidate.name)
+        if not candidate_match:
+            continue
+        run_id = candidate_match.group("run") or "0"
+        if run_id in selected_run_ids:
+            matched_files.append(candidate)
+    return matched_files
+
+
 def resolve_inputs(patterns: list[str]) -> list[Path]:
     files: list[Path] = []
     for pattern in patterns:
-        matches = sorted(Path(p) for p in glob.glob(pattern))
-        if matches:
-            files.extend(matches)
+        alias_matches = resolve_appfl_run_aliases(pattern)
+        if alias_matches is not None:
+            files.extend(alias_matches)
         else:
+            matches = sorted(Path(p) for p in glob.glob(pattern))
+            if matches:
+                files.extend(matches)
             candidate = Path(pattern)
             if candidate.exists():
                 files.append(candidate)
@@ -145,6 +231,17 @@ def parse_group_spec(spec: str) -> tuple[str, list[str]]:
     return label, patterns
 
 
+def parse_group_scale_spec(spec: str) -> tuple[str, float]:
+    if "=" not in spec:
+        raise ValueError(f"Invalid --group-time-scale value '{spec}'. Expected LABEL=FACTOR")
+    label, raw_factor = spec.split("=", 1)
+    label = label.strip()
+    raw_factor = raw_factor.strip()
+    if not label or not raw_factor:
+        raise ValueError(f"Invalid --group-time-scale value '{spec}'. Expected LABEL=FACTOR")
+    return label, float(raw_factor)
+
+
 def build_groups(
     inputs: list[str], group_specs: list[str]
 ) -> tuple[list[dict[str, object]], bool]:
@@ -163,6 +260,14 @@ def build_groups(
 
     files = resolve_inputs(inputs)
     return [{"label": "run", "files": files}], True
+
+
+def build_group_time_scales(group_scale_specs: list[str]) -> dict[str, float]:
+    scales: dict[str, float] = {}
+    for spec in group_scale_specs:
+        label, factor = parse_group_scale_spec(spec)
+        scales[label] = factor
+    return scales
 
 
 def load_run(path: Path) -> list[dict[str, float]]:
@@ -218,6 +323,40 @@ def load_run_from_txt(path: Path) -> list[dict[str, float]]:
     return points
 
 
+def scale_run_time(run: list[dict[str, float]], factor: float) -> list[dict[str, float]]:
+    if factor == 1.0:
+        return [dict(point) for point in run]
+    return [
+        {
+            **point,
+            "elapsed_time": float(point["elapsed_time"]) * factor,
+        }
+        for point in run
+    ]
+
+
+def apply_time_scales(
+    groups: list[dict[str, object]],
+    global_scale: float,
+    group_scales: dict[str, float],
+) -> None:
+    known_labels = {str(group["label"]) for group in groups}
+    unknown_labels = sorted(set(group_scales) - known_labels)
+    if unknown_labels:
+        raise ValueError(
+            "Unknown labels in --group-time-scale: " + ", ".join(unknown_labels)
+        )
+
+    for group in groups:
+        label = str(group["label"])
+        runs = group["runs"]
+        assert isinstance(runs, list)
+        group_scale = group_scales.get(label, 1.0)
+        total_scale = global_scale * group_scale
+        group["time_scale"] = total_scale
+        group["runs"] = [scale_run_time(run, total_scale) for run in runs]
+
+
 def summarize_mean_curve(
     runs: list[list[dict[str, float]]],
 ) -> tuple[list[float], list[float], list[float], list[float]]:
@@ -242,6 +381,37 @@ def summarize_mean_curve(
         lower_acc.append(acc_mean - acc_std)
         upper_acc.append(acc_mean + acc_std)
     return mean_time, mean_acc, lower_acc, upper_acc
+
+
+def clip_accuracy_bounds(
+    lower: list[float], upper: list[float], minimum: float = 0.0, maximum: float = 100.0
+) -> tuple[list[float], list[float]]:
+    """Keep plotted uncertainty bands inside the valid percentage range."""
+    clipped_lower = [max(minimum, value) for value in lower]
+    clipped_upper = [min(maximum, value) for value in upper]
+    return clipped_lower, clipped_upper
+
+
+def all_accuracies_within_percent_range(groups: list[dict[str, object]]) -> bool:
+    for group in groups:
+        runs = group["runs"]
+        assert isinstance(runs, list)
+        for run in runs:
+            for point in run:
+                value = float(point["val_accuracy"])
+                if value < 0.0 or value > 100.0:
+                    return False
+    return True
+
+
+def time_to_accuracy(
+    run: list[dict[str, float]], threshold: float
+) -> float | None:
+    """Return the first elapsed time when validation accuracy reaches a threshold."""
+    for point in run:
+        if point["val_accuracy"] >= threshold:
+            return point["elapsed_time"]
+    return None
 
 
 def pick_best_run(
@@ -318,6 +488,7 @@ def plot_group(
 
     if aggregate in {"mean", "both"}:
         mean_time, mean_acc, lower_acc, upper_acc = summarize_mean_curve(runs)
+        lower_acc, upper_acc = clip_accuracy_bounds(lower_acc, upper_acc)
         ax.plot(
             mean_time,
             mean_acc,
@@ -332,6 +503,8 @@ def plot_group(
             upper_acc,
             color=color,
             alpha=0.2,
+            edgecolor="none",
+            linewidth=0.0,
             label="mean ± 1 std" if label_individual_runs else None,
             zorder=4,
         )
@@ -362,6 +535,7 @@ def plot_runs(
     all_alpha: float,
     dpi: int,
     label_individual_runs: bool,
+    x_label: str,
 ) -> None:
     fig, ax = plt.subplots(figsize=(8, 5))
     colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
@@ -385,8 +559,10 @@ def plot_runs(
             label_individual_runs=label_individual_runs,
         )
 
-    ax.set_xlabel("Elapsed Time (s)")
-    ax.set_ylabel("Validation Accuracy")
+    ax.set_xlabel(x_label)
+    ax.set_ylabel("Validation Accuracy (%)")
+    if all_accuracies_within_percent_range(groups):
+        ax.set_ylim(0.0, 100.0)
     ax.set_title(title)
     ax.grid(True, alpha=0.3, linestyle="--")
     ax.legend()
@@ -397,6 +573,49 @@ def plot_runs(
     plt.close(fig)
 
 
+def format_summary_cell(values: list[float], total_runs: int) -> str:
+    """Format a threshold summary cell with the mean and reach count."""
+    if not values:
+        return f"N/A (0/{total_runs})"
+    return f"{mean(values):.2f} ({len(values)}/{total_runs})"
+
+
+def print_group_summary(groups: list[dict[str, object]]) -> None:
+    """Print aggregate metrics for each setting."""
+    headers = ["Setting", "Time to 90%", "Time to 95%", "Best accuracy"]
+    rows: list[list[str]] = []
+
+    for group in groups:
+        label = group["label"]
+        runs = group["runs"]
+        assert isinstance(label, str)
+        assert isinstance(runs, list)
+
+        tta_90 = [value for run in runs if (value := time_to_accuracy(run, 90.0)) is not None]
+        tta_95 = [value for run in runs if (value := time_to_accuracy(run, 95.0)) is not None]
+        best_accuracies = [max(point["val_accuracy"] for point in run) for run in runs]
+
+        rows.append(
+            [
+                label,
+                format_summary_cell(tta_90, len(runs)),
+                format_summary_cell(tta_95, len(runs)),
+                f"{mean(best_accuracies):.4f}",
+            ]
+        )
+
+    widths = [
+        max(len(row[idx]) for row in [headers] + rows)
+        for idx in range(len(headers))
+    ]
+
+    print("\nSummary (mean across runs)")
+    print("  " + " | ".join(header.ljust(widths[idx]) for idx, header in enumerate(headers)))
+    print("  " + "-+-".join("-" * width for width in widths))
+    for row in rows:
+        print("  " + " | ".join(value.ljust(widths[idx]) for idx, value in enumerate(row)))
+
+
 def main() -> None:
     args = parse_args()
     groups, label_individual_runs = build_groups(args.inputs, args.group)
@@ -404,12 +623,19 @@ def main() -> None:
         files = group["files"]
         assert isinstance(files, list)
         group["runs"] = [load_run(path) for path in files]
+    apply_time_scales(
+        groups=groups,
+        global_scale=args.time_scale,
+        group_scales=build_group_time_scales(args.group_time_scale),
+    )
 
     aggregate = normalize_aggregate_mode(args.aggregate, groups)
     first_group_files = groups[0]["files"]
     assert isinstance(first_group_files, list)
     output = args.output or infer_output_path(first_group_files[0])
     title = args.title or infer_title(groups, aggregate)
+    any_scaled = any(abs(float(group.get("time_scale", 1.0)) - 1.0) > 1e-12 for group in groups)
+    x_label = args.x_label or ("CPU Time (s)" if any_scaled else "Elapsed Time (s)")
 
     plot_runs(
         groups=groups,
@@ -420,9 +646,15 @@ def main() -> None:
         all_alpha=args.all_alpha,
         dpi=args.dpi,
         label_individual_runs=label_individual_runs,
+        x_label=x_label,
     )
 
     print(f"Saved figure to: {output}")
+    if any_scaled:
+        print("Applied time scaling:")
+        for group in groups:
+            print(f"  {group['label']}: x {float(group.get('time_scale', 1.0)):.6f}")
+    print_group_summary(groups)
     for group in groups:
         label = group["label"]
         runs = group["runs"]

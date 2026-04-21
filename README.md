@@ -65,7 +65,7 @@ Please go to the `examples` folder first, and then run the following command
 python serial/run_serial.py \
     --server_config config/server_fedavg.yaml \
     --client_config config/client_1.yaml \
-    --num_clients 5
+    --num_clients 20
 ```
 where `--server_config` is the path to the configuration file for the FL server. We currently provide three configuration files for the FL server, corresponding to three different FL algorithms. However, it should be noted at the beginning that serial simulation is only suitable and making sense for synchrnous federated learning algorithms. 
 - `config/server_fedcompass.yaml`: FL server for the FedCompass algorithm
@@ -77,11 +77,11 @@ where `--server_config` is the path to the configuration file for the FL server.
 #### MPI Simulation
 Please go to the `examples` folder first, and then run the following command
 ```bash
-mpiexec -n 6 python mpi/run_mpi.py \
+mpiexec -n 21 python mpi/run_mpi.py \
     --server_config config/server_fedcompass.yaml \
     --client_config config/client_1.yaml 
 ```
-where `mpiexec -n 6` means that we start 6 MPI processes, and there will be 6-1=5 FL clients, as one MPI process will serve as the FL server.
+where `mpiexec -n 21` means that we start 21 MPI processes, and there will be 21-1=20 FL clients, as one MPI process will serve as the FL server.
 
 #### gRPC Deployment
 
@@ -90,12 +90,10 @@ Please go to the `examples` folder first. To launch a server, users can run the 
 python grpc/run_server.py --config config/server_fedcompass.yaml
 ```
 
-The above command launches an FL server at `localhost:50051` waiting for connection from two FL clients. To launch two FL clients, open two separate terminals and go to the `examples` folder, and run the following two commands, respectively. This will help you start an FL experiment with two clients and a server running the specified algorithm.
+The above command launches an FL server at `localhost:50051` waiting for connection from 20 FL clients. To launch 20 FL clients, open separate terminals and go to the `examples` folder, and run the following commands with different client ids. This starts an FL experiment with 20 clients and a server running the specified algorithm.
 ```bash
-python grpc/run_client_1.py
-```
-```bash
-python grpc/run_client_2.py
+python grpc/run_client.py --config config/client_1.yaml --client-id 0 --num-clients 20
+python grpc/run_client.py --config config/client_1.yaml --client-id 1 --num-clients 20
 ```
 
 ### Features

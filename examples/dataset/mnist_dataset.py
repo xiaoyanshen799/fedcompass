@@ -15,7 +15,8 @@ def plot_distribution(
     classes_samples: List[int], 
     sample_matrix: np.ndarray, 
     output_dirname: Optional[str],
-    output_filename: Optional[str]
+    output_filename: Optional[str],
+    row_labels: Optional[List[str]] = None,
 ):
     """
     Visualize the data distribution among clients for different classes.
@@ -46,10 +47,13 @@ def plot_distribution(
             color=colors[i],
         )
 
+    if row_labels is None:
+        row_labels = [f"Client{i + 1}" for i in range(num_clients)]
     ax.set_ylabel("Client")
     ax.set_xlabel("Number of Elements")
     ax.set_xticks([])
-    ax.set_yticks([])
+    ax.set_yticks(range(num_clients))
+    ax.set_yticklabels(row_labels)
     output_dirname = "output" if output_dirname is None else output_dirname
     output_filename = "data_distribution.pdf" if output_filename is None else output_filename
     output_filename = f"{output_filename}.pdf" if not output_filename.endswith(".pdf") else output_filename
@@ -62,6 +66,45 @@ def plot_distribution(
         unique_filename = f"{filename_base}_{unique}{ext}"
         unique += 1
     plt.savefig(os.path.join(output_dirname, unique_filename))
+    plt.close()
+
+def _get_class_distribution(dataset: data.Dataset) -> np.ndarray:
+    """Return class counts for a dataset as a 1D numpy array."""
+    labels = []
+    for _, label in dataset:
+        labels.append(int(label))
+    if not labels:
+        return np.zeros(0, dtype=np.int32)
+    num_classes = max(labels) + 1
+    return np.bincount(labels, minlength=num_classes).astype(np.int32)
+
+def plot_distribution_with_server(
+    train_datasets: List[data.Dataset],
+    server_dataset: data.Dataset,
+    output_dirname: Optional[str],
+    output_filename: Optional[str],
+):
+    """Plot client data distributions together with the server validation split."""
+    client_distributions = [_get_class_distribution(dataset) for dataset in train_datasets]
+    server_distribution = _get_class_distribution(server_dataset)
+    num_classes = max([len(server_distribution)] + [len(dist) for dist in client_distributions])
+    sample_matrix = np.zeros((num_classes, len(train_datasets) + 1), dtype=np.int32)
+    for idx, dist in enumerate(client_distributions):
+        sample_matrix[:len(dist), idx] = dist
+    sample_matrix[:len(server_distribution), len(train_datasets)] = server_distribution
+    row_labels = [f"Client{i + 1}" for i in range(len(train_datasets))] + ["Server"]
+    output_filename = (
+        None if output_filename is None
+        else f"{pathlib.Path(output_filename).stem}_with_server.pdf"
+    )
+    plot_distribution(
+        len(train_datasets) + 1,
+        server_distribution.tolist(),
+        sample_matrix,
+        output_dirname,
+        output_filename,
+        row_labels=row_labels,
+    )
 
 def iid_partition(
     train_dataset: data.Dataset, 
@@ -267,11 +310,35 @@ def dirichlet_noniid_partition(
             total += sample_matrix[i][j]
         sample_matrix[i][num_clients - 1] = classes_samples[i] - total
 
-    if visualization:
-        plot_distribution(num_clients, classes_samples, sample_matrix, output_dirname, output_filename)
-
     # number of elements from each class for each client
     num_elements = np.array(sample_matrix.transpose(), dtype=np.int32)
+     # Integer rounding can occasionally leave a client with no samples at all.
+    # Rebalance a single sample from the largest non-empty client when that happens.
+    client_totals = num_elements.sum(axis=1)
+    empty_clients = np.where(client_totals == 0)[0]
+    for empty_client in empty_clients:
+        donor_totals = num_elements.sum(axis=1)
+        donor_candidates = np.where(donor_totals > 1)[0]
+        if len(donor_candidates) == 0:
+            raise ValueError(
+                "Dirichlet partition produced an empty client dataset and no donor client "
+                "had enough samples to rebalance."
+            )
+        donor = donor_candidates[np.argmax(donor_totals[donor_candidates])]
+        donor_classes = np.where(num_elements[donor] > 0)[0]
+        donor_class = donor_classes[np.argmax(num_elements[donor][donor_classes])]
+        num_elements[donor][donor_class] -= 1
+        num_elements[empty_client][donor_class] += 1
+
+    if visualization:
+        plot_distribution(
+            num_clients,
+            classes_samples,
+            num_elements.transpose(),
+            output_dirname,
+            output_filename,
+        )
+
     sum_elements = np.cumsum(num_elements, axis=0)
 
     train_datasets = []
@@ -296,6 +363,7 @@ def get_mnist(
     num_clients: int,
     client_id: int,
     partition_strategy: str = "iid",
+    include_server_distribution: bool = False,
     **kwargs
 ):
     """
@@ -329,5 +397,13 @@ def get_mnist(
         train_datasets = dirichlet_noniid_partition(train_data_raw, num_clients, **kwargs)
     else:
         raise ValueError(f"Invalid partition strategy: {partition_strategy}")
+
+    if kwargs.get("visualization", False) and include_server_distribution:
+        plot_distribution_with_server(
+            train_datasets,
+            test_dataset,
+            kwargs.get("output_dirname"),
+            kwargs.get("output_filename"),
+        )
     
     return train_datasets[client_id], test_dataset
