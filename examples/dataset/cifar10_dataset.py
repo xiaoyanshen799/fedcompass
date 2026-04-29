@@ -12,7 +12,7 @@ from vision_dataset_utils import (
 )
 
 
-def get_mnist(
+def get_cifar10(
     num_clients: int,
     client_id: int,
     partition_strategy: str = "iid",
@@ -20,10 +20,10 @@ def get_mnist(
     **kwargs,
 ):
     """
-    Return the MNIST dataset for a given client.
+    Return the CIFAR-10 dataset for a given client.
     """
     return get_torchvision_dataset(
-        torchvision.datasets.MNIST,
+        torchvision.datasets.CIFAR10,
         num_clients=num_clients,
         client_id=client_id,
         partition_strategy=partition_strategy,

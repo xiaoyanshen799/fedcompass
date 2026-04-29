@@ -78,8 +78,17 @@ class APPFLServerAgent:
                 self._maybe_run_server_validation()
                 return global_model
             if blocking:
+                self.logger.info(
+                    f"Blocking on synchronized global model for client {client_id}."
+                )
                 result = global_model.result() # blocking until the `Future` is done
+                self.logger.info(
+                    f"Synchronized global model ready for client {client_id}; starting server validation check."
+                )
                 self._maybe_run_server_validation()
+                self.logger.info(
+                    f"Server validation check finished for client {client_id}."
+                )
                 return result
             else:
                 return global_model # return the `Future` object
@@ -292,6 +301,7 @@ class APPFLServerAgent:
         Evaluate the current global model on the server validation set.
         """
         assert self.server_val_dataloader is not None, "Validation dataloader is not initialized."
+        original_device = next(self.model.parameters()).device
         device = self.server_agent_config.server_configs.get("device", "cpu")
         self.model.to(device)
         self.model.eval()
@@ -307,6 +317,7 @@ class APPFLServerAgent:
                 target_pred.append(output.detach().cpu().numpy())
         val_loss /= len(self.server_val_dataloader)
         val_accuracy = float(self.metric(np.concatenate(target_true), np.concatenate(target_pred)))
+        self.model.to(original_device)
         self.model.train()
         return val_loss, val_accuracy
 
@@ -327,10 +338,16 @@ class APPFLServerAgent:
             if self._server_start_time is None:
                 # Fallback for flows that do not register all clients up front.
                 self._server_start_time = time.time()
+            self.logger.info(
+                f"Starting server-side validation for global update {current_update}."
+            )
             val_loss, val_accuracy = self._evaluate_global_model()
             elapsed_time = time.time() - self._server_start_time
             self.logger.log_content([current_update, elapsed_time, val_loss, val_accuracy])
             self._last_logged_global_update = current_update
+            self.logger.info(
+                f"Finished server-side validation for global update {current_update}."
+            )
 
     def _get_num_clients(self) -> int:
         assert (

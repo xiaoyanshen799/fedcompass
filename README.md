@@ -74,6 +74,27 @@ where `--server_config` is the path to the configuration file for the FL server.
 
 `--client_config` is the path to the base configuration file for the FL clients, and `--num_clients` is the number of FL clients you would like to simulate.
 
+#### Switching Between MNIST and CIFAR-10
+
+Dataset and model selection are configuration-driven:
+- MNIST defaults use `dataset_path: ./dataset/mnist_dataset.py` with `dataset_name: get_mnist`
+- CIFAR-10 examples use `dataset_path: ./dataset/cifar10_dataset.py` with `dataset_name: get_cifar10`
+- MNIST defaults use `model_path: ./model/cnn.py` with `model_name: CNN`
+- CIFAR-10 examples use `model_path: ./model/cifar_resnet.py` with `model_name: ResNet18`
+
+Example CIFAR-10 configs are provided:
+- `config/client_5_cifar10.yaml`
+- `config/server_fedavg_cifar10.yaml`
+- `config/server_fedcompass_cifar10.yaml`
+
+Example serial run on CIFAR-10:
+```bash
+python serial/run_serial.py \
+    --server_config config/server_fedavg_cifar10.yaml \
+    --client_config config/client_5_cifar10.yaml \
+    --num_clients 20
+```
+
 #### MPI Simulation
 Please go to the `examples` folder first, and then run the following command
 ```bash

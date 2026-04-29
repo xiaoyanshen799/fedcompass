@@ -42,7 +42,7 @@ client_configs:
 server_configs:
   scheduler: CompassScheduler
   scheduler_kwargs:
-    num_clients: 10
+    num_clients: 20
     same_init_model: true
     max_local_steps: 100
     min_local_steps: 20
@@ -56,21 +56,21 @@ server_configs:
       a: 0.5
     alpha: 0.9
     gradient_based: true
-    num_clients: 10
+    num_clients: 20
   seed: 42
   device: cpu
-  num_global_epochs: 800
+  num_global_epochs: 500
   server_validation: true
   validation_data_configs:
     dataset_path: ./dataset/mnist_dataset.py
     dataset_name: get_mnist
     dataset_kwargs:
-      num_clients: 10
+      num_clients: 20
       client_id: 0
-      partition_strategy: dirichlet_nomiid
-      alpha1: 5
+      partition_strategy: class_noniid
+      alpha1: 20
       alpha2: 0.5
-      seed: 1099
+      seed: 712
   logging_output_dirname: ./output
   logging_output_filename: result
   comm_configs:

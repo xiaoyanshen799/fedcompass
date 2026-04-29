@@ -22,6 +22,12 @@ argparser.add_argument(
     default=None,
     help="Override server log output base filename.",
 )
+argparser.add_argument(
+    "--device",
+    type=str,
+    default=None,
+    help="Override server/client device, e.g. cpu, cuda, or cuda:0.",
+)
 args = argparser.parse_args()
 
 server_agent_config = OmegaConf.load(args.config)
@@ -29,6 +35,12 @@ if args.logging_output_dir is not None:
     server_agent_config.server_configs.logging_output_dirname = args.logging_output_dir
 if args.logging_output_filename is not None:
     server_agent_config.server_configs.logging_output_filename = args.logging_output_filename
+if args.device is not None:
+    server_agent_config.server_configs.device = args.device
+    if hasattr(server_agent_config, "client_configs") and hasattr(
+        server_agent_config.client_configs, "train_configs"
+    ):
+        server_agent_config.client_configs.train_configs.device = args.device
 server_agent = APPFLServerAgent(server_agent_config=server_agent_config)
 
 communicator = GRPCServerCommunicator(

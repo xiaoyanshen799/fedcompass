@@ -41,9 +41,16 @@ class NaiveTrainer(BaseTrainer):
         )
         if not hasattr(self.train_configs, "device"):
             self.train_configs.device = "cpu"
+        train_dataset_size = len(self.train_dataset)
+        train_batch_size = min(self.train_configs.get("train_batch_size", 32), train_dataset_size)
+        if train_batch_size <= 0:
+            raise ValueError("Training dataset is empty.")
+        # Avoid singleton tail batches, which break BatchNorm-based models in train mode.
+        if train_batch_size > 1 and train_dataset_size > 1 and train_dataset_size % train_batch_size == 1:
+            train_batch_size -= 1
         self.train_dataloader = DataLoader(
             self.train_dataset,
-            batch_size=self.train_configs.get("train_batch_size", 32),
+            batch_size=train_batch_size,
             shuffle=self.train_configs.get("train_data_shuffle", True),
             num_workers=self.train_configs.get("num_workers", 0),
         )
@@ -173,7 +180,7 @@ class NaiveTrainer(BaseTrainer):
             self.model_state = copy.deepcopy(self.model.state_dict())
         
         # Move to CPU for communication
-        if self.train_configs.device == "cuda":
+        if str(self.train_configs.device).startswith("cuda"):
             for k in self.model_state:
                 self.model_state[k] = self.model_state[k].cpu()
 

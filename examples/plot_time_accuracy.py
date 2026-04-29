@@ -414,6 +414,15 @@ def time_to_accuracy(
     return None
 
 
+def time_to_peak_accuracy(run: list[dict[str, float]]) -> float:
+    """Return the first elapsed time when a run reaches its best validation accuracy."""
+    peak_accuracy = max(point["val_accuracy"] for point in run)
+    for point in run:
+        if point["val_accuracy"] == peak_accuracy:
+            return point["elapsed_time"]
+    raise ValueError("Run contains no accuracy points")
+
+
 def pick_best_run(
     runs: list[list[dict[str, float]]], metric: str
 ) -> tuple[int, list[dict[str, float]]]:
@@ -582,7 +591,7 @@ def format_summary_cell(values: list[float], total_runs: int) -> str:
 
 def print_group_summary(groups: list[dict[str, object]]) -> None:
     """Print aggregate metrics for each setting."""
-    headers = ["Setting", "Time to 90%", "Time to 95%", "Best accuracy"]
+    headers = ["Setting", "Time to 90%", "Time to 95%", "Time to best", "Best accuracy"]
     rows: list[list[str]] = []
 
     for group in groups:
@@ -592,7 +601,8 @@ def print_group_summary(groups: list[dict[str, object]]) -> None:
         assert isinstance(runs, list)
 
         tta_90 = [value for run in runs if (value := time_to_accuracy(run, 90.0)) is not None]
-        tta_95 = [value for run in runs if (value := time_to_accuracy(run, 95.0)) is not None]
+        tta_95 = [value for run in runs if (value := time_to_accuracy(run, 92.0)) is not None]
+        time_to_best = [time_to_peak_accuracy(run) for run in runs]
         best_accuracies = [max(point["val_accuracy"] for point in run) for run in runs]
 
         rows.append(
@@ -600,6 +610,7 @@ def print_group_summary(groups: list[dict[str, object]]) -> None:
                 label,
                 format_summary_cell(tta_90, len(runs)),
                 format_summary_cell(tta_95, len(runs)),
+                f"{mean(time_to_best):.2f}",
                 f"{mean(best_accuracies):.4f}",
             ]
         )

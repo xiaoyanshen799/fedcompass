@@ -1,3 +1,4 @@
+import threading
 from typing import Any, Union, Dict, OrderedDict
 from concurrent.futures import Future
 from omegaconf import DictConfig
@@ -13,6 +14,7 @@ class SyncScheduler(BaseScheduler):
         super().__init__(scheduler_configs, aggregator, logger)
         self.local_models = {}
         self.future = {}
+        self._access_lock = threading.Lock()
         assert (
             hasattr(self.scheduler_configs, "num_clients"), 
             f"{self.__class__.__name__}: num_clients attribute is not found in the server configuration."
@@ -30,21 +32,31 @@ class SyncScheduler(BaseScheduler):
         :param kwargs: additional keyword arguments for the scheduler
         :return: the future object for the aggregated model
         """
-        assert (
-            client_id not in self.local_models, 
-            f"{self.__class__.__name__}: client {client_id} has already submitted the local model."
-        )
-        future = Future()
-        self.local_models[client_id] = local_model
-        self.future[client_id] = future
-        if len(self.local_models) == self.num_clients:
-            aggregated_model = self.aggregator.aggregate(self.local_models, **kwargs)
-            while self.future:
-                client_id, future = self.future.popitem()
-                future.set_result(aggregated_model)
-            self.local_models.clear()
-            self._num_global_epochs += 1
-        return future
+        with self._access_lock:
+            assert (
+                client_id not in self.local_models, 
+                f"{self.__class__.__name__}: client {client_id} has already submitted the local model."
+            )
+            future = Future()
+            self.local_models[client_id] = local_model
+            self.future[client_id] = future
+            self.logger.info(
+                f"{self.__class__.__name__}: received local model from client {client_id} "
+                f"({len(self.local_models)}/{self.num_clients})."
+            )
+            if len(self.local_models) == self.num_clients:
+                self.logger.info(
+                    f"{self.__class__.__name__}: all {self.num_clients} client updates received; "
+                    "starting aggregation."
+                )
+                aggregated_model = self.aggregator.aggregate(self.local_models, **kwargs)
+                self.logger.info(f"{self.__class__.__name__}: aggregation finished; releasing waiting clients.")
+                while self.future:
+                    client_id, future = self.future.popitem()
+                    future.set_result(aggregated_model)
+                self.local_models.clear()
+                self._num_global_epochs += 1
+            return future
     
     def get_num_global_epochs(self) -> int:
         """

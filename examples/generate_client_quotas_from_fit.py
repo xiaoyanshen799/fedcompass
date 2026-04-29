@@ -97,7 +97,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--normal-theta-mean-from-cpu",
         type=float,
-        default=50.0,
+        default=55.0,
         help="Reference CPU quota used to derive the default theta mean.",
     )
     parser.add_argument(
@@ -115,8 +115,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--exp-scale",
         type=float,
-        default=1.0,
-        help="Scale of the raw exponential samples when sampling in speed space.",
+        default=None,
+        help=(
+            "Scale (mean) of the raw exponential samples when sampling in theta space. "
+            "If omitted, use the average theta at --exp-theta-mean-from-cpu."
+        ),
+    )
+    parser.add_argument(
+        "--exp-theta-mean-from-cpu",
+        type=float,
+        default=55.0,
+        help="Reference CPU quota used to derive the default exponential theta scale.",
     )
     parser.add_argument(
         "--output-csv",
@@ -250,6 +259,51 @@ def generate_positive_normal(
     return values.astype(float)
 
 
+def generate_symmetric_normal_theta_samples(
+    rng: np.random.Generator,
+    count: int,
+    mean_theta: float,
+    std_theta: float,
+) -> np.ndarray:
+    if count <= 0:
+        return np.array([], dtype=float)
+    if std_theta <= 0.0:
+        raise ValueError(f"Normal theta std must be positive, got {std_theta}")
+
+    pair_count = count // 2
+    deviations = np.abs(rng.normal(loc=0.0, scale=std_theta, size=pair_count)).astype(float)
+    retries = 0
+    while np.any(deviations >= mean_theta):
+        mask = deviations >= mean_theta
+        deviations[mask] = np.abs(rng.normal(loc=0.0, scale=std_theta, size=int(mask.sum()))).astype(float)
+        retries += 1
+        if retries > 1000:
+            raise RuntimeError(
+                "Failed to draw symmetric normal(theta) samples with positive mirrored values. "
+                "Increase --normal-theta-mean or reduce --normal-theta-std."
+            )
+
+    lower = mean_theta - deviations
+    upper = mean_theta + deviations
+
+    if count % 2 == 0:
+        samples = np.concatenate([lower, upper])
+    else:
+        samples = np.concatenate([lower, np.array([mean_theta], dtype=float), upper])
+    return samples.astype(float)
+
+
+def generate_positive_exponential(
+    rng: np.random.Generator,
+    count: int,
+    scale: float,
+) -> np.ndarray:
+    if scale <= 0.0:
+        raise ValueError(f"Exponential scale must be positive, got {scale}")
+    values = rng.exponential(scale=scale, size=count).astype(float)
+    return np.maximum(values, 1e-8)
+
+
 def resolve_normal_theta_params(
     args: argparse.Namespace,
     fit_rows: list[dict[str, Any]],
@@ -287,6 +341,35 @@ def resolve_normal_theta_params(
     return mean_theta, std_theta
 
 
+def resolve_exponential_theta_scale(
+    args: argparse.Namespace,
+    fit_rows: list[dict[str, Any]],
+) -> float:
+    if args.exp_scale is not None:
+        scale_theta = float(args.exp_scale)
+    else:
+        reference_cpu = float(args.exp_theta_mean_from_cpu)
+        if reference_cpu <= 0.0:
+            raise ValueError("--exp-theta-mean-from-cpu must be positive.")
+        theta_values = [
+            theta_from_cpu(
+                reference_cpu,
+                float(row["a"]),
+                float(row["b"]),
+                float(row["p"]),
+                str(row["fit_model"]),
+                float(row["cpu_fit_scale"]),
+            )
+            for row in fit_rows
+        ]
+        scale_theta = float(np.mean(theta_values))
+
+    if scale_theta <= 0.0:
+        raise ValueError(f"Exponential theta scale must be positive, got {scale_theta}")
+
+    return scale_theta
+
+
 def generate_raw_speed_samples(
     args: argparse.Namespace,
     count: int,
@@ -297,9 +380,6 @@ def generate_raw_speed_samples(
         return np.ones(count, dtype=float)
     if dist == "normal":
         return generate_positive_normal(rng, count, args.normal_mean, args.normal_std)
-    if dist == "exponential":
-        values = rng.exponential(scale=args.exp_scale, size=count).astype(float)
-        return np.maximum(values, 1e-8)
     raise ValueError(f"Unsupported distribution: {args.distribution}")
 
 
@@ -354,28 +434,6 @@ def assign_target_speeds(
     return assigned_rows
 
 
-def generate_feasible_normal_theta_samples(
-    rows_ordered: list[dict[str, Any]],
-    mean_theta: float,
-    std_theta: float,
-    rng: np.random.Generator,
-) -> np.ndarray:
-    count = len(rows_ordered)
-    for _ in range(5000):
-        theta_values = np.sort(generate_positive_normal(rng, count, mean_theta, std_theta))
-        feasible = True
-        for row, theta_value in zip(rows_ordered, theta_values):
-            if not (float(row["theta_lower_bound"]) <= float(theta_value) <= float(row["theta_upper_bound"])):
-                feasible = False
-                break
-        if feasible:
-            return theta_values
-    raise RuntimeError(
-        "Failed to generate feasible normal(theta) samples. "
-        "Try increasing --max-cpu, decreasing --min-cpu, or reducing --normal-theta-std."
-    )
-
-
 def assign_target_thetas(
     enriched_rows: list[dict[str, Any]],
     target_thetas: np.ndarray,
@@ -396,9 +454,14 @@ def assign_target_thetas(
 
     assigned_rows: list[dict[str, Any]] = []
     for row, theta_target in zip(rows_ordered, theta_order):
+        requested_theta = float(theta_target)
+        feasible_theta = min(
+            max(requested_theta, float(row["theta_at_max_cpu"])),
+            float(row["theta_at_min_cpu"]),
+        )
         cpu_target = min(
             cpu_from_theta(
-                float(theta_target),
+                feasible_theta,
                 float(row["a"]),
                 float(row["b"]),
                 float(row["p"]),
@@ -408,10 +471,10 @@ def assign_target_thetas(
             max_cpu,
         )
         assigned = dict(row)
-        assigned["raw_theta"] = float(theta_target)
-        assigned["raw_speed"] = float(speed_from_theta(float(theta_target)))
-        assigned["target_speed"] = float(speed_from_theta(float(theta_target)))
-        assigned["target_theta"] = float(theta_target)
+        assigned["raw_theta"] = requested_theta
+        assigned["raw_speed"] = float(speed_from_theta(requested_theta))
+        assigned["target_speed"] = float(speed_from_theta(feasible_theta))
+        assigned["target_theta"] = feasible_theta
         assigned["cpu_quota_percent"] = float(cpu_target)
         assigned_rows.append(assigned)
 
@@ -429,11 +492,12 @@ def generate_distribution_rows(
 
     if dist == "normal" and args.normal_space == "theta":
         mean_theta, std_theta = resolve_normal_theta_params(args, fit_rows)
-        if args.assignment == "sorted":
-            rows_for_sampling = sorted(enriched_rows, key=lambda item: float(item["theta_at_max_cpu"]))
-        else:
-            rows_for_sampling = list(enriched_rows)
-        theta_samples = generate_feasible_normal_theta_samples(rows_for_sampling, mean_theta, std_theta, rng)
+        theta_samples = generate_symmetric_normal_theta_samples(
+            rng=rng,
+            count=len(enriched_rows),
+            mean_theta=mean_theta,
+            std_theta=std_theta,
+        )
         assigned_rows = assign_target_thetas(
             enriched_rows=enriched_rows,
             target_thetas=theta_samples,
@@ -442,6 +506,18 @@ def generate_distribution_rows(
             rng=rng,
         )
         return assigned_rows, {"normal_theta_mean": mean_theta, "normal_theta_std": std_theta}
+
+    if dist == "exponential":
+        exp_theta_scale = resolve_exponential_theta_scale(args, fit_rows)
+        theta_samples = generate_positive_exponential(rng, len(enriched_rows), exp_theta_scale)
+        assigned_rows = assign_target_thetas(
+            enriched_rows=enriched_rows,
+            target_thetas=theta_samples,
+            max_cpu=args.max_cpu,
+            assignment=args.assignment,
+            rng=rng,
+        )
+        return assigned_rows, {"exp_theta_scale": exp_theta_scale}
 
     raw_speeds = generate_raw_speed_samples(args, len(fit_rows), rng)
     assigned_rows = assign_target_speeds(
@@ -531,6 +607,7 @@ def write_json(
         "normal_theta_std": args.normal_theta_std,
         "normal_theta_std_ratio": args.normal_theta_std_ratio,
         "exp_scale": args.exp_scale,
+        "exp_theta_mean_from_cpu": args.exp_theta_mean_from_cpu,
         **extras,
         "cpu_quota_values": cpu_values,
         "cpu_quota_texts": [format_percent(value) for value in cpu_values],
@@ -584,6 +661,8 @@ def main() -> None:
             f"sigma={float(extras['normal_theta_std']):.6f}s, "
             f"reference_cpu={args.normal_theta_mean_from_cpu}%"
         )
+    if "exp_theta_scale" in extras:
+        print(f"Exponential(theta) settings: scale={float(extras['exp_theta_scale']):.6f}s")
     print(f"Saved generated quotas to: {output_csv}")
     print(f"Saved metadata to: {output_json}")
     print("")

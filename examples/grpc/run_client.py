@@ -47,9 +47,17 @@ argparser.add_argument(
     default=None,
     help="Override dataset visualization output filename.",
 )
+argparser.add_argument(
+    "--device",
+    type=str,
+    default=None,
+    help="Override client training device, e.g. cpu, cuda, or cuda:0.",
+)
 args = argparser.parse_args()
 
 client_agent_config = OmegaConf.load(args.config)
+if args.device is not None:
+    client_agent_config.train_configs.device = args.device
 if args.num_clients is not None:
     client_agent_config.data_configs.dataset_kwargs.num_clients = args.num_clients
 if args.client_id is not None:
@@ -72,6 +80,8 @@ client_communicator = GRPCClientCommunicator(
 )
 
 client_config = client_communicator.get_configuration()
+if args.device is not None and hasattr(client_config, "train_configs"):
+    client_config.train_configs.device = args.device
 client_agent.load_config(client_config)
 
 init_global_model = client_communicator.get_global_model(init_model=True)

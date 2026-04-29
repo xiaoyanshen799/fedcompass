@@ -19,6 +19,7 @@ LOGGING_OUTPUT_FILENAME=""
 DATA_OUTPUT_DIR=""
 DATA_OUTPUT_FILENAME=""
 SAVE_MANIFEST=""
+DEVICE=""
 
 # Optional per-client overrides.
 # Leave these arrays empty to use the defaults for every client.
@@ -90,6 +91,7 @@ Options:
   --data-output-filename NAME
                         Override dataset visualization output filename for this run.
   --save-manifest PATH  Save launched client quota/affinity metadata to CSV.
+  --device NAME        Override client training device, e.g. cpu, cuda, or cuda:0.
   --no-sudo             Call systemd-run directly instead of sudo systemd-run
   --dry-run             Print commands without launching
   -h, --help            Show this message
@@ -151,6 +153,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --save-manifest)
             SAVE_MANIFEST="$2"
+            shift 2
+            ;;
+        --device)
+            DEVICE="$2"
             shift 2
             ;;
         --no-sudo)
@@ -249,14 +255,14 @@ for ((client_id = 0; client_id < NUM_CLIENTS; client_id++)); do
         --unit "${unit_name}"
         --collect
         --service-type=exec
-        -p "CPUQuota=${cpu_quota}"
+        #-p "CPUQuota=${cpu_quota}"
         -p "WorkingDirectory=${WORKDIR}"
         env
         OMP_NUM_THREADS=1
         MKL_NUM_THREADS=1
         OPENBLAS_NUM_THREADS=1
         NUMEXPR_NUM_THREADS=1
-        taskset -c "${cpu_affinity}"
+        #taskset -c "${cpu_affinity}"
         "${PYTHON_BIN}"
         grpc/run_client.py
         --config "${CLIENT_CONFIG}"
@@ -275,6 +281,9 @@ for ((client_id = 0; client_id < NUM_CLIENTS; client_id++)); do
     fi
     if [[ -n "${DATA_OUTPUT_FILENAME}" ]]; then
         cmd+=(--data-output-filename "${DATA_OUTPUT_FILENAME}")
+    fi
+    if [[ -n "${DEVICE}" ]]; then
+        cmd+=(--device "${DEVICE}")
     fi
 
     if (( DRY_RUN )); then

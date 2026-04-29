@@ -1,6 +1,7 @@
 import uuid
 import importlib
 import torch.nn as nn
+from copy import deepcopy
 from appfl.trainer import BaseTrainer
 from appfl.compressor import Compressor
 from appfl.config import ClientAgentConfig
@@ -110,10 +111,20 @@ class APPFLClientAgent:
 
     def _load_data(self) -> None:
         """Get train and validation dataloaders from local dataloader file."""
+        dataset_kwargs = deepcopy(self.client_agent_config.data_configs.dataset_kwargs)
+        do_validation = (
+            hasattr(self.client_agent_config, "train_configs")
+            and (
+                self.client_agent_config.train_configs.get("do_validation", False)
+                or self.client_agent_config.train_configs.get("do_pre_validation", False)
+            )
+        )
+        if "load_validation_dataset" not in dataset_kwargs:
+            dataset_kwargs["load_validation_dataset"] = do_validation
         self.train_dataset, self.val_dataset = run_function_from_file(
             self.client_agent_config.data_configs.dataset_path,
             self.client_agent_config.data_configs.dataset_name,
-            **self.client_agent_config.data_configs.dataset_kwargs
+            **dataset_kwargs
         )
 
     def _load_model(self) -> None:
